@@ -1,0 +1,728 @@
+---
+title: "Exam 2"
+author: 'Yihang Xin'
+date: "11/14/2019"
+output: 
+  html_document:
+    keep_md: yes
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA, 
+                      message = FALSE, warning = FALSE)
+library(tidyverse)
+library(jsonlite)
+library(dplyr)
+library(httr)
+library(shiny)
+library(shinydashboard)
+library(htmltools)
+library(DT)
+```
+## Task 1
+```{r task1.1}
+url_1_general <- "https://newsapi.org/v2/sources?category=general&language=en&country=us&apiKey=9f3bd65426fa4424aee9670a6f876d43"
+response_1_general <- fromJSON(url_1_general)
+
+url_1_business <- "https://newsapi.org/v2/sources?category=business&language=en&country=us&apiKey=9f3bd65426fa4424aee9670a6f876d43"
+response_1_business <- fromJSON(url_1_business)
+
+df1_general <- do.call(rbind.data.frame, response_1_general[2])
+df1_business <- do.call(rbind.data.frame, response_1_business[2])
+df1 <- rbind(df1_general, df1_business)
+
+cnn_id <- filter(df1, name == "CNN")%>%
+  select(id)
+fox_news_id <- filter(df1, name == "Fox News")%>%
+  select(id)
+the_wall_street_journal_id <- filter(df1, name == "The Wall Street Journal")%>%
+  select(id)
+reuters_id <- filter(df1, name == "Reuters")%>%
+  select(id)
+```
+
+```{r task1.2}
+url_2 <- "https://newsapi.org/v2/top-headlines?country=us&q=taxes&apiKey=9f3bd65426fa4424aee9670a6f876d43"
+source_names <- c("cnn", "fox-news", "the-wall-street-journal", "reuters")
+response2 <- fromJSON(url_2)
+if (response2[2] == 0){
+  print("No result.")
+}else{
+df2 <- do.call(rbind.data.frame, response2[3]) %>% 
+  filter(source$id %in% source_names) %>%
+  arrange(desc(publishedAt)) %>%
+  slice(1)
+}
+```
+
+```{r task1.3}
+url_3 <- "https://newsapi.org/v2/everything?qInTitle=healthcare&sources=cnn,fox-news,the-wall-street-journal,reuters&from=2019-11-01&to=2019-11-01&language=en&apiKey=9f3bd65426fa4424aee9670a6f876d43"
+response_3 <- fromJSON(url_3)
+title = do.call(rbind.data.frame, response_3[3]) %>% select(title)
+```
+## Task 2
+<!-- code I use as inspiration:https://github.com/CorrelAid/newsanchor -->
+```{r task2.1}
+get_sources <- function(category = NULL,
+                        api_key = NULL) {
+  if(!is.null(category)){
+    if(length(category) > 1){
+      stop("You cannot enter more than one category.")
+    }
+    stop_throws(category)
+  }
+  if (is.null(api_key)){
+    stop(paste0("No API Key!"))
+  }
+  params <- list(category = category,
+                       language = "en",
+                       country  = "us")
+  url <- get_url("https://newsapi.org/v2/sources", params)
+  response <- get_request(url, api_key)
+  
+  content_parsed <- parse_content(response)
+  if(is.null(content_parsed$sources)){
+    content_parsed$totalResults <- 0
+  } else {
+    content_parsed$totalResults <- nrow(content_parsed$sources)
+  }
+  metadata <- extract_metadata(response, content_parsed)
+  sources_df <- extract_sources(metadata, content_parsed)
+  source_names <- c("cnn", "fox-news", "the-wall-street-journal", "reuters")
+  sources_df <- sources_df %>% filter(sources_df$id %in% source_names)
+  return(sources_df)
+}
+get_url <- function(url, query_args){
+  url <- httr::parse_url(url = url)
+  url$scheme <- "https"
+  url$query <- query_args
+  return(url)
+}
+get_request <- function(url, api_key){
+  results <- httr::GET(url, httr::add_headers("X-Api-Key" = api_key))
+  return(results)
+}
+parse_content <- function(response){
+  content_text <- httr::content(response, "text")
+  content_parsed <- jsonlite::fromJSON(content_text)
+  return(content_parsed)
+}
+extract_metadata <- function(response, content_parsed, page = NULL, page_size = NULL){
+  metadata <- data.frame(total_results = content_parsed$totalResults, 
+                         status_code   = response$status_code,
+                         request_date  = response$date,
+                         request_url   = response$url,
+                         code          = ifelse(response$status_code !=200, 
+                                                content_parsed$code, 
+                                                ""),
+                         message       = ifelse(response$status_code !=200,
+                                                content_parsed$message, 
+                                                ""),
+                         stringsAsFactors = FALSE)
+  if(!is.null(page)){
+    metadata$page <- page
+  }
+  if(!is.null(page_size)){
+    metadata$page_size <- page_size
+  }
+  return(metadata)
+}
+extract_sources <- function(metadata, content_parsed){
+  empty_df <- data.frame()
+  if (metadata$status_code == 200) {
+    if(metadata$total_results > 0){
+      return(content_parsed$sources)
+    } else {
+      warning(paste0("The search was unsuccessful!"))
+      return(empty_df)
+    }
+  } else {
+    warning(paste0("Error message: ",
+                   metadata$message))
+    return(empty_df)
+  }
+}
+category_names <- c("business", "entertainment", "general", "health","science","sports","technology")
+stop_throws <- function(category){
+  if (!category %in% category_names) {
+    stop(paste0(category, " is not a valid category. "))
+  }
+}
+```
+
+```{r task2.2}
+get_headlines <- function(q = NULL, 
+                          sources         = NULL,
+                          page_size = 100,
+                          page = 1,
+                          api_key   = NULL){
+  if (all(sapply(list(sources, q), is.null))) {
+    stop(paste0("Please provide at least either sources or query."))
+  }
+  if(!is.null(q)){
+    if(length(q) > 1){
+      stop("You can only specify one q.")
+    }
+  }
+source_names <- c("cnn", "fox-news", "the-wall-street-journal", "reuters")
+stop_throws_source <- function(source){
+  if (!source %in% source_names) { 
+    stop(paste0(source, " is not a valid source name. "))
+  }
+}
+  if(!is.numeric(page)) {
+    stop("Please enter a number.")
+  }
+  if (is.null(api_key)){
+    stop(paste0("No API Key!"))
+  }
+  if(!is.null(sources)){
+    sapply(sources, stop_throws_source)
+  }    
+  if(!is.numeric(page_size)) {
+    stop("You need to enter the number of texts per page.")
+  } 
+  else if(page_size > 100) {
+    stop("Page size cannot not exceed 100 articles per page.")
+  }
+get_url <- function(url, query_args){
+url <- httr::parse_url(url = url)
+url$scheme <- "https"
+url$query <- query_args
+return(url)
+}
+get_request <- function(url, api_key){
+  results <- httr::GET(url, httr::add_headers("X-Api-Key" = api_key))
+  return(results)
+}
+parse_content <- function(response){
+  content_text    <- httr::content(response, "text")
+  content_parsed  <- jsonlite::fromJSON(content_text)
+  return(content_parsed)
+}
+extract_metadata <- function(response, content_parsed, page = NULL, page_size = NULL){
+  metadata <- data.frame(total_results = content_parsed$totalResults, 
+                         status_code   = response$status_code,
+                         request_date  = response$date,
+                         request_url   = response$url,
+                         code          = ifelse(response$status_code !=200, 
+                                                content_parsed$code, 
+                                                ""),
+                         message       = ifelse(response$status_code !=200,
+                                                content_parsed$message, 
+                                                ""),
+                         stringsAsFactors = FALSE)
+  if(!is.null(page)){
+    metadata$page <- page
+  }
+  if(!is.null(page_size)){
+    metadata$page_size <- page_size
+  }
+  return(metadata)
+}
+  params <- list(
+                    sources   = sources,
+                    q         = q,
+                    pageSize  = page_size,
+                    page      = page)
+  url <- get_url("https://newsapi.org/v2/top-headlines", params)
+  response <- get_request(url = url, api_key = api_key)
+  content_parsed <- parse_content(response)
+  if(is.null(content_parsed$totalResults)){
+    content_parsed$totalResults <- 0
+  }
+  metadata <- extract_metadata(response, content_parsed, page, page_size)
+  results_df = extract_articles(metadata = metadata, content_parsed = content_parsed)
+  results_df <- results_df %>% filter(results_df$id %in% source_names)
+  return(results_df)
+}
+extract_articles <- function(metadata, content_parsed){
+  empty_df <- data.frame()
+  if (metadata$status_code == 200) {
+    if(metadata$total_results > 0){
+      results_df        <- content_parsed$articles
+      results_df$id     <- unlist(results_df$source$id)
+      results_df$name   <- unlist(results_df$source$name)
+      results_df$source <- NULL
+      return(results_df)
+    } else {
+      warning(paste0("The search was not successful. There were no results"))
+      return(empty_df)      
+    }
+  } else {
+    warning(paste0("The search resulted in the following error:" , 
+                   metadata$message))
+    return(empty_df)
+  }
+}
+```
+
+```{r task2.3}
+get_historic <- function(q = NULL,
+                          q_title = NULL,
+                           sources         = 'cnn,fox-news,the-wall-street-journal,reuters',
+                           from            = NULL,
+                           to              = NULL,
+                           sort_by         = "publishedAt",
+                           page            = 1,
+                           page_size       = 100,
+                           api_key         = NULL) {
+
+  sortings <- c("publishedAt", "relevancy", "popularity")
+  if (!is.numeric(page_size)) {
+    stop("You need to insert numeric values for the number of texts per page.")
+  }
+  if (page_size > 100) {
+    stop("Page size cannot not exceed 100 articles per page.")
+  }
+    if (!is.numeric(page)) {
+    stop("Page should be a number.")
+  }
+  if (!sort_by %in% c("publishedAt", "relevancy", "popularity")) {
+    stop("Sortings can be only by 'publishedAt', 'relevancy', or 'popularity'.")
+  }
+source_names <- c("cnn", "fox-news", "the-wall-street-journal", "reuters")
+collapse_to_comma_separated <- function(v){
+  return(paste(v, collapse = ","))
+}
+if (!is.null(sources)) {
+    if (length(sources) > 4) {
+      stop("You cannot specify more than 4 sources.")
+    }
+    sources <- collapse_to_comma_separated(sources)
+}
+
+  if (is.null(api_key))
+    stop(
+      paste0("No API Key!"
+      )
+    )
+  lubridate_orders <- c("ymdHMs","ymdHMsz", "ymd")
+  lubridate_orders_string <- paste(lubridate_orders, collapse = ", ")
+  
+  if (!is.null(from)) {
+    from_parsed <- lubridate::parse_date_time(from, lubridate_orders, quiet = TRUE)
+    if (is.na(from_parsed)) {
+      stop(paste0("From argument needs conform to one of the following lubridate orders: ", 
+                  lubridate_orders_string, ". See help for lubridate::parse_date_time. ", 
+                  "If in doubt, use %Y-%m-%d for a date or %Y-%m-%d %H:%M:%S for datetime."))
+    }
+    from <- format(from_parsed, "%Y-%m-%dT%H:%M:%S")
+  }
+  if (!is.null(to)) {
+    to_parsed <- lubridate::parse_date_time(to, lubridate_orders, quiet = TRUE)
+    if (is.na(to_parsed)) {
+      stop(paste0("To argument needs conform to one of the following lubridate orders: ", 
+                  lubridate_orders_string, ". See help for lubridate::parse_date_time. ", 
+                  "If in doubt, use %Y-%m-%d for a date or %Y-%m-%d %H:%M:%S for datetime."))
+    }
+    to <- format(to_parsed, "%Y-%m-%dT%H:%M:%S")
+  }
+  params <- list(
+    q              = q,
+    qInTitle = q_title,
+    language        = "en",
+    sources         = sources,
+    from            = from,
+    to              = to,
+    sortBy          = sort_by,
+    pageSize        = page_size,
+    page            = page
+  )
+get_url <- function(url, query_args){
+url <- httr::parse_url(url = url)
+url$scheme <- "https"
+url$query <- query_args
+return(url)
+}
+get_request <- function(url, api_key){
+  results <- httr::GET(url, httr::add_headers("X-Api-Key" = api_key))
+  return(results)
+}
+parse_content <- function(response){
+  content_text <- httr::content(response, "text")
+  content_parsed <- jsonlite::fromJSON(content_text)
+  return(content_parsed)
+}
+extract_metadata <- function(response, content_parsed, page = NULL, page_size = NULL){
+  metadata <- data.frame(total_results = content_parsed$totalResults, 
+                         status_code   = response$status_code,
+                         request_date  = response$date,
+                         request_url   = response$url,
+                         code          = ifelse(response$status_code !=200, 
+                                                content_parsed$code, 
+                                                ""),
+                         message       = ifelse(response$status_code !=200,
+                                                content_parsed$message, 
+                                                ""),
+                         stringsAsFactors = FALSE)
+  if(!is.null(page)){
+    metadata$page <- page
+  }
+  if(!is.null(page_size)){
+    metadata$page_size <- page_size
+  }
+  return(metadata)
+}
+extract_articles <- function(metadata, content_parsed){
+  empty_df <- data.frame()
+  if (metadata$status_code == 200) {
+    if(metadata$total_results > 0){
+      results_df        <- content_parsed$articles
+      results_df$id     <- unlist(results_df$source$id)
+      results_df$name   <- unlist(results_df$source$name)
+      results_df$source <- NULL
+      return(results_df)
+    } else {
+      warning(paste0("The search was not successful. There were no results"))
+      return(empty_df)      
+    }
+  } else {
+    warning(paste0("The search resulted in the following error:" , 
+                   metadata$message))
+    return(empty_df)
+  }
+}
+  url <-
+    get_url("https://newsapi.org/v2/everything", params)
+  response <-
+    get_request(url = url, api_key = api_key)
+  content_parsed <- parse_content(response)
+  if (is.null(content_parsed$totalResults)) {
+    content_parsed$totalResults <- 0
+  }
+  metadata <- extract_metadata(response, content_parsed, page, page_size)
+  results_df <- extract_articles(metadata = metadata, 
+                                            content_parsed = content_parsed)
+  results_df  <- results_df %>% filter(results_df$id %in% source_names)
+  return(results_df)
+}
+```
+## Task 3
+<!-- code I use as inspiration:https://github.com/achutharunr/NewsAPI_KeywordSearch -->
+```{r task3}
+ui <- dashboardPage(
+  skin = "black",
+  dashboardHeader(title = "Central News Hub",
+  dropdownMenu(type = "messages",
+  messageItem(
+    from = "Support",
+    message = "The App is ready."
+  )
+)
+),
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Dashboard", tabName = "dashboard", icon = icon("dashboard")),
+      menuItem("Sources", tabName = "sources", icon = icon("th")),
+      menuItem("Top Headlines", tabName = "headlines", icon = icon("th")),
+      menuItem("Historic", tabName = "everything", icon = icon("th"))
+    )
+  ),
+  dashboardBody(
+     tabItems(
+      tabItem(tabName = "dashboard",
+        h1("Welcome to Central News Hub!"),
+        h2("Central News Hub gives you access to breaking news headlines and historical articles from over 30,000 news sources."),
+        h2("This app is created by Rshiny and News API."),
+        h2("This app has 3 main endpoints: Sources, Top Headlines, Historic."),
+        h5("API key is required to access. Please get API key", a("here.", href="https://newsapi.org/")),
+         h5("For further information about news api, please read", a("here.", href="https://newsapi.org/docs")),
+        h6("Copyright (c) 2019 Yihang Xin.
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the Software), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.THE SOFTWARE IS PROVIDED AS IS, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."),
+         column(
+      1,
+      tags$img(src = "https://imageog.flaticon.com/icons/png/512/21/21601.png?size=1200x630f&pad=10,10,10,10&ext=png&bg=FFFFFFFF")
+    ),
+    column(
+      1,
+      uiOutput(outputId = "image")
+    )
+      ),
+
+      tabItem(tabName = "sources",
+        h2("Function Sources with arguments API Key and Category. This function serves as a wrapper for News API's Sources endpoint."),
+        box(
+          title = "Your API key",  solidHeader = TRUE,
+  background = "red",width = 300,
+        textInput(inputId = "api_key_1", label = "", placeholder = "Please Enter API Key"),
+                actionButton(inputId = "api_key_2", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "news_reel_1")),
+         
+        box(
+          title = "The category you want to get headlines for. Possible options: business, entertainment, general, health, science, sports, technology. You cannot enter multiple categories.",  solidHeader = TRUE,
+   background = "blue",width = 300,
+        textInput(inputId = "category_1", label = "", placeholder = "Please Enter Category"),
+                actionButton(inputId = "category_2", label = "Search"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "news_reel")),
+              h2("News Sources"),
+  DT::dataTableOutput("mytable"),
+      ),
+
+      tabItem(tabName = "headlines",
+        h2("Function Top Headlines with arguments API Key, Sources, Query, Page_size and Page. This function serves as a wrapper for News API's Top headlines endpoint."),
+        box(title = "Your API key",  solidHeader = TRUE,
+   background = "red",width = 300,
+        textInput(inputId = "api_key_3", label = "", placeholder = "Please Enter API Key"),
+                actionButton(inputId = "api_key_4", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "news_reel_2")),
+        box(title = "A comma-seperated string of identifiers for the news sources or blogs you want headlines from. (You have to enter sources or query!)",  solidHeader = TRUE,
+   background = "blue",width = 300,
+        textInput(inputId = "category_3", value = "", label = "", placeholder = "Please Enter Sources"),
+                actionButton(inputId = "category_4", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "news_reel_3")),
+        box(title = "Keywords or a phrase to search for. (You have to enter sources or query!)",  solidHeader = TRUE,
+   background = "blue",width = 300,
+        textInput(inputId = "query_1", value = "", label = "", placeholder = "Please Enter Query"),
+                actionButton(inputId = "query_2", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "news_reel_4")),
+
+          
+        box(title = "Use this to page through the results if the total results found is greater than the page size.",  solidHeader = TRUE,
+   background = "blue",width = 300,
+        textInput(inputId = "page_1", value = "1", label = "", placeholder = "Please Enter Page Number"),
+                actionButton(inputId = "page_2", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "news_reel_5")),
+        box(title = "The number of results to return per page (request). 20 is the default, 100 is the maximum.",  solidHeader = TRUE, background = "blue",width = 300,
+        textInput(inputId = "size_1", value = "20", label = "", placeholder = "Please Enter Query"),
+                actionButton(inputId = "size_2", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "news_reel_6")),
+         box(title = "Top Headlines",  solidHeader = TRUE, background = "black",width = 300,
+         actionButton(inputId = "search_1", label = "Search"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "news_reel_7")),
+        DT::dataTableOutput("top")
+     ),
+
+      tabItem(tabName = "everything",
+        h2("Function historic with arguments q, q_title, sources, from, to, sort_by, page_size, page, api_key. This function serves as a wrapper for News API's Everything endpoint."),
+        box(title = "Your API key",  solidHeader = TRUE, background = "red",width = 300,
+        textInput(inputId = "api_key_5", label = "", placeholder = "Please Enter API Key"),
+                actionButton(inputId = "api_key_6", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "every_1")),
+        box(title = "A comma-seperated string of identifiers for the news sources or blogs you want headlines from. (You have to enter sources or query!)",  solidHeader = TRUE, background = "blue",width = 300,
+        textInput(inputId = "category_5", value = "", label = "", placeholder = "Please Enter Sources"),
+                actionButton(inputId = "category_6", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "every_2")),
+        box(title = "Keywords or a phrase to search for. (You have to enter sources or query!)",  solidHeader = TRUE, background = "blue",width = 300,
+        textInput(inputId = "query_3", value = "", label = "", placeholder = "Please Enter Query"),
+                actionButton(inputId = "query_4", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "every_3")),
+        box(title = "Use this to page through the results if the total results found is greater than the page size.",  solidHeader = TRUE, background = "blue",width = 300,
+        textInput(inputId = "page_3", value = "1", label = "", placeholder = "Please Enter Page Number"),
+                actionButton(inputId = "page_4", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "every_4")),
+        box(title = "The number of results to return per page (request). 20 is the default, 100 is the maximum.",  solidHeader = TRUE, background = "blue",width = 300,
+        textInput(inputId = "size_3", value = "20", label = "", placeholder = "Please Enter Query"),
+                actionButton(inputId = "size_4", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "every_5")),
+        box(title = "Keywords or phrases to search for in the article title only.",  solidHeader = TRUE, background = "blue",width = 300,
+        textInput(inputId = "title", label = "", placeholder = "Please Enter Title"),
+                actionButton(inputId = "title_1", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "title_2")),
+        box(title = "A date and optional time for the oldest article allowed. This should be in ISO 8601 format (e.g. 2019-11-26 or 2019-11-26T03:05:37) Default: the oldest according to your plan.",  solidHeader = TRUE, background = "blue",width = 300,
+        textInput(inputId = "from", label = "", placeholder = "Please Enter Start Date"),
+                actionButton(inputId = "from_1", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "from_2")),
+        box(title = "A date and optional time for the newest article allowed. This should be in ISO 8601 format (e.g. 2019-11-26 or 2019-11-26T03:05:37)",  solidHeader = TRUE, background = "blue",width = 300,
+        textInput(inputId = "to", label = "", placeholder = "Please Enter End Date"),
+                actionButton(inputId = "to_1", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "to_2")),
+        box(title = "The order to sort the articles in. Possible options: relevancy, popularity, publishedAt.
+relevancy = articles more closely related to q come first.
+popularity = articles from popular sources and publishers come first.
+publishedAt = newest articles come first.
+Default: publishedAt",  solidHeader = TRUE, background = "blue",width = 300,
+        textInput(inputId = "sort", value = "publishedAt",label = "", placeholder = "Please Enter Sort"),
+                actionButton(inputId = "sort_1", label = "Submit"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "sort_2")),
+         box(title = "Historic",  solidHeader = TRUE, background = "black",width = 300,
+         actionButton(inputId = "search_2", label = "Search"),
+                tags$hr(),
+                br(),
+                br(),
+                tags$div(id = "everything")),
+        DT::dataTableOutput("everything")
+      )
+    )
+  )
+)
+
+server <- function(input, output) {
+news <- observeEvent(eventExpr = input$category_2,
+                       handlerExpr = {
+                         {
+                            news_source <- input$category_1
+                            Key <- input$api_key_1
+                            category_names <- c("business", "entertainment", "general", "health","science","sports","technology")
+stop_throws <- function(category){
+  if (!category %in% category_names) {
+    stop(paste0(category, " is not a valid category. "))
+  }
+}
+stop_throws(news_source)
+                            if(Key == ''){print("No API Key!")}
+url<-paste0("https://newsapi.org/v2/sources?category=",news_source,"&apiKey=",Key)
+                           news_list <- readLines(url, warn = F)
+                           news_list <- fromJSON(news_list)
+                             df_news <- news_list[[2]]
+                             output$mytable = DT::renderDataTable({df_news})
+                          }
+                         }
+)
+
+news_2 <- observeEvent(eventExpr = input$search_1,
+                       handlerExpr = {
+                         {
+                            news_source <- input$category_3
+                            Key <- input$api_key_3
+                            q1 <- input$query_1
+                            page_1 <- input$page_1
+                            size_1 <- input$size_1
+                            if(Key == ''){print("No API Key!")}
+url<-paste0("https://newsapi.org/v2/top-headlines?sources=",news_source,"&q=",q1,"&page=",page_1,"&pageSize=",size_1,"&apiKey=",Key)
+                           news_list <- readLines(url, warn = F)
+                           news_list <- fromJSON(news_list)
+                           if(!class(news_list$articles) == "list")
+                           {
+                             df_news <- news_list[[3]]
+                             if(nrow(df_news) > 10)
+                             {
+                               df_news <- df_news[1:10, ]
+                             }
+                             removeUI(selector = "#inserted_news_reel")
+                             df <- df_news
+                             news_reel_html <- ""
+                             for(i in seq(1, nrow(df), 1))
+                             {
+                               title <- gsub(pattern = "<.{2}>", replacement = "", x = df$title[i])
+                               title_html <- tags$a(href = df$url[i], target="_target", tags$h4(title))
+                               image_html <- tags$img(src = df$urlToImage[i], height = "80", width = "80")
+                               desc_html <- tags$p(df$description[i])
+                               fluidRow_html <- doRenderTags(fluidRow(
+                                 column(1, image_html),
+                                 column(6, title_html,desc_html)
+                               ))
+                               news_reel_html <- paste0(news_reel_html, fluidRow_html, tags$hr())
+                             }
+                             
+                             insertUI(selector = "#news_reel_7",
+                                      ui = tags$div(id = "inserted_news_reel",
+                                                    HTML(news_reel_html))
+                             )
+                            output$top = DT::renderDataTable({news_list[[3]]
+  })
+                           }else{
+                             removeUI(selector = "#inserted_news_reel")
+                             insertUI(selector = "#news_reel_7",
+                                      ui = tags$div(id = "inserted_news_reel",
+                                                    tags$h5("No relevant news articles found")))
+                           }
+                         }
+                       })
+
+news_3 <- observeEvent(eventExpr = input$search_2,
+                       handlerExpr = {
+                         {
+                            news_source <- input$category_5
+                            Key <- input$api_key_5
+                            q3 <- input$query_3
+                            page_3 <- input$page_3
+                            size_3 <- input$size_3
+                            qtitle <- input$title
+                            sortby <- input$sort
+                            from_date <- input$from
+                            to_date <- input$to
+                            if(Key == ''){print("No API Key!")}
+url<-paste0("https://newsapi.org/v2/everything?sources=",news_source,"&q=",q3,"&page=",page_3,"&pageSize=",size_3,"&qInTitle=",qtitle,"&from=",from_date,"&to=",to_date,"&sortBy=",sortby,"&apiKey=",Key)
+                           news_list <- readLines(url, warn = F)
+                           news_list <- fromJSON(news_list)
+                           if(!class(news_list$articles) == "list")
+                           {
+                             df_news <- news_list[[3]]
+                             if(nrow(df_news) > 10)
+                             {
+                               df_news <- df_news[1:10, ]
+                             }
+                             removeUI(selector = "#inserted_news_reel_1")
+                             df <- df_news
+                             news_reel_html <- ""
+                             for(i in seq(1, nrow(df), 1))
+                             {
+                               title <- gsub(pattern = "<.{2}>", replacement = "", x = df$title[i])
+                               title_html <- tags$a(href = df$url[i], target="_target", tags$h4(title))
+                               image_html <- tags$img(src = df$urlToImage[i], height = "80", width = "80")
+                               desc_html <- tags$p(df$description[i])
+                               fluidRow_html <- doRenderTags(fluidRow(
+                                 column(1, image_html),
+                                 column(6, title_html,desc_html)
+                               ))
+                               news_reel_html <- paste0(news_reel_html, fluidRow_html, tags$hr())
+                             }
+                             
+                             insertUI(selector = "#everything",
+                                      ui = tags$div(id = "inserted_news_reel_1",
+                                                    HTML(news_reel_html))
+                             )
+                            output$everything = DT::renderDataTable({news_list[[3]]
+  })
+                           }else{
+                             removeUI(selector = "#inserted_news_reel_1")
+                             insertUI(selector = "#everything",
+                                      ui = tags$div(id = "inserted_news_reel_1",
+                                                    tags$h5("No relevant news articles found")))
+                           }
+                         }
+                       })
+                          }
+shinyApp(ui, server)
+```
